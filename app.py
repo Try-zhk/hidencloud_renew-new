@@ -8,20 +8,11 @@ except ImportError:
     from playwright.sync_api import sync_playwright
 
 # --- 环境变量 (可在Settings里设置secrets或者私库直接填写在双引号里)---
-COOKIE_RAW   = (os.environ.get('COOKIE_VALUE') or "").strip().strip('"').strip("'")
-COOKIE_NAME  = 'remember_web_59ba36addc2b2f9401580f014c7f58ea4e30989d'
-COOKIE_VALUE = COOKIE_RAW
-if '=' in COOKIE_RAW:
-    k, v = COOKIE_RAW.split('=', 1)
-    if 'remember_web' in k:
-        COOKIE_NAME = k.strip()
-    COOKIE_VALUE = v.strip().strip('"').strip("'")
-
-EMAIL        = os.environ.get('EMAIL') or ""           # 登录邮箱,可选，作为备用, 建议填写
-PASSWORD     = os.environ.get('PASSWORD') or ""        # 登录密码,可选，作为备用, 建议填写
+EMAIL        = os.environ.get('EMAIL') or ""           # 登录邮箱,必填
+PASSWORD     = os.environ.get('PASSWORD') or ""        # 登录密码,必填
 TG_CHAT_ID   = os.environ.get('TG_CHAT_ID') or ""      # Telegram Chat ID,可选，通知
 TG_BOT_TOKEN = os.environ.get('TG_BOT_TOKEN') or ""    # Telegram Bot Token,可选
-SERVER_NAME  = os.environ.get('SERVER_NAME') or os.environ.get('SERVER') or os.environ.get('HOST_NAME') or "" # 服务器名称/备注
+SERVER_NAME  = os.environ.get('SERVER_NAME') or os.environ.get('SERVER') or os.environ.get('HOST_NAME') or "" # 服务器名称/备注/ID
 
 BASE_URL = "https://dash.hidencloud.com"
 LOGIN_URL = f"{BASE_URL}/auth/login"
@@ -99,7 +90,7 @@ def send_telegram_notification(status, old_due="未知", new_due="未知", serve
     elif EMAIL:
         masked_email = EMAIL[:2] + '****'
     else:
-        masked_email = "Cookie 免密登录"
+        masked_email = "未配置邮箱"
 
     # 4. 获取当前出口 IP
     current_ip = get_current_ip(PROXY_SERVER if IS_PROXY else None)
@@ -451,32 +442,7 @@ def solve_turnstile(page, timeout=120, success_check=None,
     return False
 
 def login(page):
-    # 1. Cookie 登录尝试
-    if COOKIE_VALUE:
-        log("📇 尝试 Cookie 登录...")
-        try:
-            page.context.add_cookies([{
-                'name': COOKIE_NAME,
-                'value': COOKIE_VALUE,
-                'domain': 'dash.hidencloud.com',
-                'path': '/',
-                'expires': int(time.time()) + 3600 * 24 * 365,
-                'httpOnly': True,
-                'secure': True,
-                'sameSite': 'Lax'
-            }])
-            page.goto(f"{BASE_URL}/dashboard", wait_until="domcontentloaded", timeout=60000)
-            solve_turnstile(page, timeout=90, success_check=page_ready, reload_after=8)
-            page_title = page.title()
-            log(f"📝 当前Title: {page_title}")
-            if "auth/login" not in page.url:
-                log(f"✅ Cookie 登录成功！当前已到达dashboard页面")
-                return True
-            log("⚠️ Cookie 失效，切换到账号密码登录...")
-        except Exception as e:
-            log(f"⚠️ Cookie 登录出现异常: 账号密码登录...")
-
-    # 2. 账号密码登录
+    # 账号密码登录
     if not EMAIL or not PASSWORD:
         log("❌ 未配置 EMAIL/PASSWORD，无法进行账号密码登录")
         return False
@@ -771,11 +737,10 @@ def renew_service(page):
 
 def main():
     # 检查必要环境变量
-    log(f"🔍 凭证检测: COOKIE_VALUE={'已配置' if COOKIE_VALUE else '未配置'}, "
-        f"EMAIL={'已配置' if EMAIL else '未配置'}, PASSWORD={'已配置' if PASSWORD else '未配置'}")
-    if not COOKIE_VALUE and not (EMAIL and PASSWORD):
-        log("❌ 缺少登录凭证")
-        send_telegram_notification("❌ 启动失败", detail="缺少必要的登录凭证 (COOKIE_VALUE / EMAIL / PASSWORD)")
+    log(f"🔍 凭证检测: EMAIL={'已配置' if EMAIL else '未配置'}, PASSWORD={'已配置' if PASSWORD else '未配置'}")
+    if not (EMAIL and PASSWORD):
+        log("❌ 缺少登录凭证 (EMAIL / PASSWORD)")
+        send_telegram_notification("❌ 启动失败", detail="缺少必要的登录凭证 (EMAIL / PASSWORD)")
         sys.exit(1)
 
     global SERVICE_URL
@@ -809,7 +774,7 @@ def main():
 
             if not login(page):
                 log("❌ 登录失败，发送通知并退出")
-                send_telegram_notification("❌ 登录失败", detail="Cookie 已失效且账号密码登录未通过")
+                send_telegram_notification("❌ 登录失败", detail="账号密码登录未通过，请检查账号密码或验证码拦截")
                 sys.exit(1)
 
             # 登录成功后，自动获取 Server ID
