@@ -8,7 +8,15 @@ except ImportError:
     from playwright.sync_api import sync_playwright
 
 # --- 环境变量 (可在Settings里设置secrets或者私库直接填写在双引号里)---
-COOKIE_VALUE = os.environ.get('COOKIE_VALUE') or ""    # remember_web cookie 值，必填
+COOKIE_RAW   = (os.environ.get('COOKIE_VALUE') or "").strip().strip('"').strip("'")
+COOKIE_NAME  = 'remember_web_59ba36addc2b2f9401580f014c7f58ea4e30989d'
+COOKIE_VALUE = COOKIE_RAW
+if '=' in COOKIE_RAW:
+    k, v = COOKIE_RAW.split('=', 1)
+    if 'remember_web' in k:
+        COOKIE_NAME = k.strip()
+    COOKIE_VALUE = v.strip().strip('"').strip("'")
+
 EMAIL        = os.environ.get('EMAIL') or ""           # 登录邮箱,可选，作为备用, 建议填写
 PASSWORD     = os.environ.get('PASSWORD') or ""        # 登录密码,可选，作为备用, 建议填写
 TG_CHAT_ID   = os.environ.get('TG_CHAT_ID') or ""      # Telegram Chat ID,可选，通知
@@ -382,10 +390,10 @@ def solve_turnstile(page, timeout=120, success_check=None,
                 elif time.time() - iframe_gone_since >= 8:
                     log("✅ Turnstile 验证通过（挑战框已消失）！")
                     return True
-            elif (not require_positive and success_check is None
-                    and time.time() - start >= appear_grace):
-                log("ℹ️ 页面未出现 Turnstile，无需处理")
-                return True
+            elif time.time() - start >= (appear_grace if not require_positive else 8):
+                if not had_iframe:
+                    log("ℹ️ 页面未出现 Turnstile 或无需处理")
+                    return True
             time.sleep(1)
             continue
 
@@ -448,7 +456,7 @@ def login(page):
         log("📇 尝试 Cookie 登录...")
         try:
             page.context.add_cookies([{
-                'name': 'remember_web_59ba36addc2b2f9401580f014c7f58ea4e30989d',
+                'name': COOKIE_NAME,
                 'value': COOKIE_VALUE,
                 'domain': 'dash.hidencloud.com',
                 'path': '/',
@@ -559,14 +567,35 @@ def get_server_id(page):
         html = page.content()
         log(f"📝 页面长度: {len(html)}, URL: {page.url}")
 
-        # 方案1: 从 href 链接中提取 /service/数字/manage
+        # 方案0: 若环境变量 SERVER_NAME 直接指定了数字 ID (如 "218079" 或 "#218079")
+        clean_name = re.sub(r'^[#\s]+', '', SERVER_NAME).strip()
+        if clean_name.isdigit():
+            log(f"✅ 从环境变量 SERVER_NAME 直接获取到 Server ID: {clean_name}")
+            return clean_name
+
+        # 方案1: 如果配置了 SERVER_NAME，优先在页面中定位包含该名称的区块，提取关联的 service id
+        if SERVER_NAME:
+            pattern = rf'{re.escape(SERVER_NAME)}[\s\S]*?/service/(\d+)/manage'
+            match = re.search(pattern, html, re.IGNORECASE)
+            if match:
+                server_id = match.group(1)
+                log(f"✅ 根据 SERVER_NAME [{SERVER_NAME}] 匹配到 Server ID: {server_id}")
+                return server_id
+            pattern_rev = rf'/service/(\d+)/manage[\s\S]*?{re.escape(SERVER_NAME)}'
+            match_rev = re.search(pattern_rev, html, re.IGNORECASE)
+            if match_rev:
+                server_id = match_rev.group(1)
+                log(f"✅ 根据 SERVER_NAME [{SERVER_NAME}] 逆向匹配到 Server ID: {server_id}")
+                return server_id
+
+        # 方案2: 从 href 链接中提取 /service/数字/manage
         matches = re.findall(r'/service/(\d+)/manage', html)
         if matches:
             server_id = matches[0]
             log(f"✅ 从链接中获取到 Server ID: {server_id}")
             return server_id
 
-        # 方案2: 从 span 标签中提取 #数字 (如 "Free Server #218079")
+        # 方案3: 从 span 标签中提取 #数字 (如 "Free Server #218079")
         matches = re.findall(r'#(\d{4,})', html)
         if matches:
             server_id = matches[0]
@@ -611,8 +640,8 @@ def renew_service(page):
         time.sleep(3)
 
         log("🖱️ 准备点击 'Renew' 按钮...")
-        renew_btn = page.locator('button:has-text("Renew")')
-        create_btn = page.locator('button:has-text("Create Invoice")')
+        renew_btn = page.locator('button:has-text("Renew"), a:has-text("Renew"), [role="button"]:has-text("Renew"), button:has-text("续期"), a:has-text("续期")').first
+        create_btn = page.locator('button:has-text("Create Invoice"), a:has-text("Create Invoice"), [role="button"]:has-text("Create Invoice")').first
 
         modal_opened = False
         for i in range(5):
@@ -622,9 +651,11 @@ def renew_service(page):
                 log(f"🖱️ 第 {i+1} 次尝试点击 'Renew'...")
                 renew_btn.click()
 
-                # 等待检测是否出现“未到续期时间”弹窗
+                # 等待检测是否出现“未到续期时间”弹窗或服务暂停
                 time.sleep(3)
                 page_text = page.locator("body").inner_text()
+                if "suspended" in page_text.lower():
+                    log("⚠️ 检测到页面包含 Suspended 状态，该机器可能已暂停！")
                 if "Renewal Restricted" in page_text or "can only renew" in page_text.lower():
                     log("⚠️ 未到续期时间，无法续期。")
                     page.screenshot(path="renew_not_allowed.png")
